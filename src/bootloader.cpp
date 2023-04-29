@@ -8,6 +8,7 @@
  */
 
 #include "bootloader.h"
+#include "optiboot.h"
 
 // define macros for LED control if enabled
 #ifdef LED
@@ -85,6 +86,17 @@ int main () {
     __asm__ __volatile__("  mov %[mcusr_val],r2 ;Move Between Registers \n\t"
                         :[mcusr_val] "=r"(mcusr));
   #endif
+
+  // try to bootload via serial (based on optiboot code)
+  //
+  // FIXME if this is placed after init() it won't work.
+  // optiboot code will never getting out of it's getch() method.
+  // if i performa cli() after the init(), then optiboot works fine.
+  // 
+  // FIXME the optiboot_main() will never unblock. i need to add logic that
+  // will timeout after a while and let the can bootloader try its turn.
+  optiboot_init();
+  optiboot_main();
 
   // call init from arduino framework to setup timers
   init();

@@ -497,17 +497,18 @@ typedef uint8_t pagelen_t;
 void __attribute__((noinline)) __attribute__((leaf)) putch(char);
 uint8_t __attribute__((noinline)) __attribute__((leaf)) getch(void) ;
 void __attribute__((noinline)) verifySpace();
-void __attribute__((noinline)) watchdogConfig(uint8_t x);
 
 static void getNch(uint8_t);
 #if LED_START_FLASHES > 0
 static inline void flash_led(uint8_t);
 #endif
-static inline void watchdogReset();
 static inline void writebuffer(int8_t memtype, addr16_t mybuff,
                                addr16_t address, pagelen_t len);
 static inline void read_mem(uint8_t memtype,
                             addr16_t, pagelen_t len);
+
+// "function" to jump to the main application
+extern void (*gotoApp)( void );
 
 #if SOFT_UART
 void uartDelay() __attribute__ ((naked));
@@ -600,6 +601,13 @@ static addr16_t buff = {(uint8_t *)(RAMSTART)};
 
 #endif // VIRTUAL_BOOT_PARTITION
 
+#define TEST_LED_DDR  DDRD
+#define TEST_LED_PORT PORTD
+#define TEST_LED_PIN  7
+#define TEST_LED_ON   TEST_LED_PORT |= _BV(TEST_LED_PIN)
+#define TEST_LED_OFF  TEST_LED_PORT &= ~_BV(TEST_LED_PIN)
+#define TEST_LED_FLIP TEST_LED_PORT ^= _BV(TEST_LED_PIN)
+
 void sectionOpts() __attribute__((naked));
 void sectionOpts() {
 /*
@@ -687,173 +695,10 @@ void sectionOpts() {
 /* Wasn't that FUN! */
 }
 
-/* everything that needs to run VERY early */
-void pre_main(void) {
-  // Allow convenient way of calling do_spm function - jump table, so
-  //   entry to this function will always be here, independent of
-  //   compilation, features etc
-  asm volatile (
-    "  rjmp    1f\n"
-#if APP_NOSPM
-    "  ret\n"   // if do_spm isn't include, return without doing anything
-#else
-    "  rjmp    do_spm\n"
-#endif
-    "1:\n"
-    );
-}
-
-
-/* main program starts here */
-int main(void) {
-  uint8_t ch;
-
-  /*
-   * Making these local and in registers prevents the need for initializing
-   * them, and also saves space because code no longer stores to memory.
-   * (initializing address keeps the compiler happy, but isn't really
-   *  necessary, and uses 4 bytes of flash.)
-   */
-  register addr16_t address;
-  register pagelen_t  length;
-
-  // After the zero init loop, this is the first code to run.
-  //
-  // This code makes the following assumptions:
-  //  No interrupts will execute
-  //  SP points to RAMEND
-  //  r1 contains zero
-  //
-  // If not, uncomment the following instructions:
-  // cli();
-  asm volatile ("  clr __zero_reg__");
-
-#if defined(__AVR_ATmega8__) || defined(__AVR_ATmega8515__) ||  \
-  defined(__AVR_ATmega8535__) || defined (__AVR_ATmega16__) ||  \
-  defined (__AVR_ATmega32__) || defined (__AVR_ATmega64__)  ||  \
-  defined (__AVR_ATmega128__) || defined (__AVR_ATmega162__)
-  SP=RAMEND;  // This is done by hardware reset on newer chips
-#endif
-
+int optiboot_init() {
 #if defined(OSCCAL_VALUE)
   OSCCAL = OSCCAL_VALUE;
 #endif
-
-  /*
-   * Protect as much from MCUSR as possible for application
-   * and still skip bootloader if not necessary
-   *
-   * Code by MarkG55
-   * see discussion in https://github.com/Optiboot/optiboot/issues/97
-   */
-#ifndef MCUSR  // Backward compatability with old AVRs
-#define MCUSR MCUCSR
-#endif
-#if (START_APP_ON_EXTR == 0 && NO_START_APP_ON_POR == 0)
-  /*
-   * Normal behavior.  Start if EXTRF in on and WDRF is off
-   */
-#  define APP_START_REASONS ((ch & (_BV(WDRF) | _BV(EXTRF))) != _BV(EXTRF))
-#  define WDRF_CLR_REASONS (ch & _BV(EXTRF))
-#elif (START_APP_ON_EXTR && NO_START_APP_ON_POR)
-  /*
-   * If NO_START_APP_ON_POR is defined, run bootloader after POR.
-   * This allows use with reset disabled: power on and immediately
-   * program.
-   */
-#  define APP_START_REASONS ((ch & (_BV(PORF) | _BV(WDRF) | _BV(EXTRF))) != _BV(PORF))
-#  define WDRF_CLR_REASONS ((ch & (_BV(PORF) | _BV(WDRF))) == (_BV(PORF) | _BV(WDRF)))
-#elif ((START_APP_ON_EXTR == 0) && NO_START_APP_ON_POR)
-  /*
-   * If START_APP_ON_EXTR is defined, don't run bootloader after
-   * an external reset - only useful in combination with above,
-   * for some unusual use cases.
-   */
-#  define APP_START_REASONS (ch & _BV(WDRF))
-#  define WDRF_CLR_REASONS (ch & (_BV(PORF) | _BV(EXTRF)))
-#else
-  /*
-   * Only run bootloader via jmp to 0 with MCUSR==0.
-   * Probably an error.
-   */
-#  warning "Bootloader can only start via app request because "
-#  warning "START_APP_ON_EXTR is defined and NO_START_APP_ON_POR isn't"
-#  define APP_START_REASONS 1 /* Always start rge App. */
-#  define WDRF_CLR_REASONS 0  /* Never clear WDRF */
-#endif
-
-  ch = MCUSR;
-
-  // Skip all logic and run bootloader if MCUSR is cleared (application request)
-  if (ch != 0) {
-    /*
-     * To run the boot loader, External Reset Flag must be set.
-     * If not, we could make shortcut and jump directly to application code.
-     * Also WDRF set with EXTRF is a result of Optiboot timeout, so we
-     * shouldn't run bootloader in loop :-) That's why:
-     *  1. application is running if WDRF is cleared
-     *  2. we clear WDRF if it's set with EXTRF to avoid loops
-     * One problematic scenario: broken application code sets watchdog timer
-     * without clearing MCUSR before and triggers it quickly. But it's
-     * recoverable by power-on with pushed reset button.
-     */
-
-    if (APP_START_REASONS) {
-      if (WDRF_CLR_REASONS) {
-        /*
-         * Clear WDRF if it was most probably set by wdr in bootloader.
-         */
-        if ((uint16_t)&MCUSR > 0x1F) {
-          MCUSR = ~(_BV(WDRF));   // optimize to LDI/OUT
-        } else {
-          MCUSR &= ~(_BV(WDRF));  // or optimize to CBI if possible
-        }
-      }
-      /*
-       * save the reset flags in the designated register
-       * This can be saved in a main program by putting code in .init0 (which
-       * executes before normal c init code) to save R2 to a global variable.
-       */
-      __asm__ __volatile__ ("  mov r2, %0\n" :: "r" (ch));
-
-      // switch off watchdog
-      watchdogConfig(WATCHDOG_OFF);
-      // Note that appstart_vec is defined so that this works with either
-      // real or virtual boot partitions.
-      __asm__ __volatile__ (
-        // Jump to 'save' or RST vector
-#ifdef VIRTUAL_BOOT_PARTITION
-        // full code version for virtual boot partition
-        "  ldi r30,%[rstvec]\n"
-        "  clr r31\n"
-        "  ijmp\n"::[rstvec] "M"(appstart_vec)
-#else
-#ifdef RAMPZ
-        // use absolute jump for devices with lot of flash
-        "  jmp 0\n"::
-#else
-        // use rjmp to go around end of flash to address 0
-        // it uses fact that optiboot_version constant is 2 bytes before end of flash
-        "  rjmp optiboot_version+2\n"
-#endif //RAMPZ
-#endif //VIRTUAL_BOOT_PARTITION
-        );
-    }
-  } //end handling of MCUSR !=0
-
-#if LED_START_FLASHES > 0
-  // Set up Timer 1 for timeout counter
-#if defined(__AVR_ATtiny261__)||defined(__AVR_ATtiny461__)||defined(__AVR_ATtiny861__)
-  TCCR1B = 0x0E; //div 8196 - we could divide by less since it's a 10-bit counter, but why?
-#elif defined(__AVR_ATtiny25__)||defined(__AVR_ATtiny45__)||defined(__AVR_ATtiny85__)
-  TCCR1 = 0x0E; //div 8196 - it's an 8-bit timer.
-#elif defined(__AVR_ATtiny43__)
-#error "LED flash for Tiny43 not yet supported"
-#else
-  TCCR1B = _BV(CS12) | _BV(CS10); // div 1024
-#endif
-#endif
-
 
 #if (SOFT_UART == 0)
 #if defined(__AVR_ATmega8__) || defined (__AVR_ATmega8515__) || \
@@ -894,9 +739,6 @@ int main(void) {
   #endif
 #endif
 
-  // Set up watchdog to trigger after desired timeout
-  watchdogConfig(WDTPERIOD);
-
 #if (LED_START_FLASHES > 0) || LED_DATA_FLASH || LED_START_ON
   /* Set LED pin as output */
   LED_DDR |= _BV(LED);
@@ -908,15 +750,20 @@ int main(void) {
   UART_DDR |= _BV(UART_TX_BIT);
 #endif
 
-#if LED_START_FLASHES > 0
-  /* Flash onboard LED to signal entering of bootloader */
-  flash_led(LED_START_FLASHES * 2);
-#else
-#if LED_START_ON
-  /* Turn on LED to indicate starting bootloader (less code!) */
-  LED_PORT |= _BV(LED);
-#endif
-#endif
+  return 0;
+}
+
+int optiboot_main() {
+  uint8_t ch;
+
+  /*
+   * Making these local and in registers prevents the need for initializing
+   * them, and also saves space because code no longer stores to memory.
+   * (initializing address keeps the compiler happy, but isn't really
+   *  necessary, and uses 4 bytes of flash.)
+   */
+  addr16_t address;
+  pagelen_t  length;
 
   /* Forever loop: exits by causing WDT reset */
   for (;;) {
@@ -1167,8 +1014,9 @@ int main(void) {
     }
     else if (ch == STK_LEAVE_PROGMODE) { /* 'Q' */
       // Adaboot no-wait mod
-      watchdogConfig(WATCHDOG_16MS);
       verifySpace();
+      putch(STK_OK);
+      gotoApp();
     }
     else {
       // This covers the response to commands like STK_ENTER_PROGMODE
@@ -1176,6 +1024,8 @@ int main(void) {
     }
     putch(STK_OK);
   }
+
+  return 0;
 }
 
 void putch(char ch) {
@@ -1283,7 +1133,6 @@ uint8_t getch(void) {
 #endif
 
 #if SOFT_UART
-  watchdogReset();
   __asm__ __volatile__ (
     "1: sbic  %[uartPin],%[uartBit]\n"  // Wait for start edge
     "   rjmp  1b\n"
@@ -1319,12 +1168,12 @@ uint8_t getch(void) {
      * the application "soon", if it keeps happening.  (Note that we
      * don't care that an invalid char is returned...)
      */
-    watchdogReset();
+    // FIXME jump back to bootloader start
   }
 #else
   while (!(LINSIR & _BV(LRXOK)))  {  /* Spin */ }
   if (!(LINSIR & _BV(LFERR))) {
-    watchdogReset();  /* Eventually abort if wrong speed */
+    // FIXME jump back to bootloader start
   }
 #endif
   ch = UART_UDR;
@@ -1371,9 +1220,7 @@ void getNch(uint8_t count) {
 
 void verifySpace() {
   if (getch() != CRC_EOP) {
-    watchdogConfig(WATCHDOG_16MS);    // shorten WD timeout
-    while (1)                         // and busy-loop so that WD causes
-      ;                               //  a reset and app start.
+    // FIXME jump back to bootloader start
   }
   putch(STK_INSYNC);
 }
@@ -1394,7 +1241,6 @@ void flash_led(uint8_t count) {
 #endif
 
     toggle_led();
-    watchdogReset();
 #if (SOFT_UART == 0)
     /*
      * While in theory, the STK500 initial commands would be buffered
@@ -1416,32 +1262,6 @@ void flash_led(uint8_t count) {
   } while (--count);
 }
 #endif
-
-// Watchdog functions. These are only safe with interrupts turned off.
-void watchdogReset() {
-  __asm__ __volatile__ (
-    "  wdr\n"
-    );
-}
-
-void watchdogConfig(uint8_t x) {
-#ifdef WDCE //does it have a Watchdog Change Enable?
-#ifdef WDTCSR
-  WDTCSR = _BV(WDCE) | _BV(WDE);
-#else
-  WDTCR= _BV(WDCE) | _BV(WDE);
-#endif
-#else //then it must be one of those newfangled ones that use CCP
-  CCP=0xD8; //so write this magic number to CCP
-#endif
-
-#ifdef WDTCSR
-  WDTCSR = x;
-#else
-  WDTCR= x;
-#endif
-}
-
 
 /*
  * void writebuffer(memtype, buffer, address, length)
