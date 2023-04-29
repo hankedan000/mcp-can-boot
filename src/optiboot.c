@@ -345,7 +345,7 @@
 #endif
 
 unsigned const int __attribute__((section(".version")))
-optiboot_version = 256*(OPTIBOOT_MAJVER + OPTIBOOT_CUSTOMVER) + OPTIBOOT_MINVER;
+optiboot_version asm("optiboot_version") __attribute__ ((used)) = 256*(OPTIBOOT_MAJVER + OPTIBOOT_CUSTOMVER) + OPTIBOOT_MINVER;
 
 #define __AVR_LIBC_DEPRECATED_ENABLE__ 1  // don't poison MCUSR on some chips
 #include <inttypes.h>
