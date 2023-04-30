@@ -87,16 +87,16 @@ int main () {
                         :[mcusr_val] "=r"(mcusr));
   #endif
 
-  // try to bootload via serial (based on optiboot code)
+  // try to bootload via serial (based on optiboot code).
+  // will timeout after ~250ms if no request for flash is found.
   //
   // FIXME if this is placed after init() it won't work.
   // optiboot code will never getting out of it's getch() method.
-  // if i performa cli() after the init(), then optiboot works fine.
-  // 
-  // FIXME the optiboot_main() will never unblock. i need to add logic that
-  // will timeout after a while and let the can bootloader try its turn.
+  // if i do cli() after the init(), then optiboot works fine.
   optiboot_init();
   optiboot_main();
+
+  // move on and try to do normal CAN flashing
 
   // call init from arduino framework to setup timers
   init();

@@ -495,6 +495,7 @@ typedef uint8_t pagelen_t;
 // int main(void) __attribute__ ((OS_main)) __attribute__ ((section (".init9"))) __attribute__((used));
 
 void __attribute__((noinline)) __attribute__((leaf)) putch(char);
+uint8_t __attribute__((noinline)) __attribute__((leaf)) uartWaitForData(uint32_t count) ;
 uint8_t __attribute__((noinline)) __attribute__((leaf)) getch(void) ;
 void __attribute__((noinline)) verifySpace();
 
@@ -767,6 +768,11 @@ int optiboot_main() {
 
   /* Forever loop: exits by causing WDT reset */
   for (;;) {
+    if ( ! uartWaitForData(500000))// ~250ms timeout
+    {
+      return 1;// give up
+    }
+
     /* get character from UART */
     ch = getch();
 
@@ -1123,6 +1129,21 @@ static void inline toggle_led(void) {
     LED_PIN = _BV(LED);  // high ports can't be sbi'ed (Issue #346)
   }
 #endif
+}
+
+uint8_t uartWaitForData(uint32_t count) {
+  uint32_t c = 0;
+#if SOFT_UART
+  #error "uartWaitForData() not implemented for SOFT_UART"
+#else
+#ifndef LIN_UART
+  while (++c < count && !(UART_SRA & _BV(RXC0)))  {  /* Spin */ }
+#else
+  while (++c < count && !(LINSIR & _BV(LRXOK)))  {  /* Spin */ }
+#endif
+#endif
+
+  return c < count;
 }
 
 uint8_t getch(void) {
