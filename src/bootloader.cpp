@@ -8,6 +8,7 @@
  */
 
 #include "bootloader.h"
+#include "lite_uart.h"
 
 // define macros for LED control if enabled
 #ifdef LED
@@ -88,6 +89,8 @@ int main () {
 
   // call init from arduino framework to setup timers
   init();
+  lite_uart_init();
+  lite_uart_putstr("mcp-can-boot\n");
 
   // local variables to save some flash space used by the bootloader
   uint32_t flashAddr = 0;
