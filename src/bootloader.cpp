@@ -211,6 +211,12 @@ int main () {
 
     // start the main application if we are not in bootloading mode and run into timeout
     if (!flashing && curTime > startTime + TIMEOUT) {
+      // write value of local mcusr into R2
+      #if MCUSR_TO_R2
+        __asm__ __volatile__("  mov r2,%[mcusr_val] ;Move Between Registers \n\t"
+                    ::[mcusr_val] "r" (mcusr));
+      #endif
+      
       startApp();
     }
 
